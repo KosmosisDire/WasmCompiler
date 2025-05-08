@@ -13,10 +13,10 @@ void shared_log_i32(int32_t value) {
     // When compiled with Emscripten for the web host
     // EM_ASM_ is a way to inline JavaScript
     EM_ASM_({
-        console.log('SHARED_LIB_LOG (Wasm via JS): ' + $0);
+        console.log($0);
     }, value);
 #else
     // When compiled natively for the native_host
-    std::cout << "SHARED_LIB_LOG (native C++): " << value << std::endl;
+    std::cout << value << std::endl;
 #endif
 }

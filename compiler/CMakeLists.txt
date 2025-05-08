@@ -1,8 +1,8 @@
-cmake_minimum_required(VERSION 3.15)
-project(MyAOTCompilerInternal CXX)
+# my_aot_compiler_project/compiler/CMakeLists.txt
+cmake_minimum_required(VERSION 3.23)
+project(MyAOTCompilerInternal CXX) 
 
-# Make WABT available for this subproject
-FetchContent_MakeAvailable(wabt) # This replaces Populate and add_subdirectory
+FetchContent_MakeAvailable(wabt)
 
 add_executable(my_aot_compiler
     src/main.cpp
@@ -19,10 +19,6 @@ target_include_directories(my_aot_compiler PRIVATE
 
 target_link_libraries(my_aot_compiler PRIVATE
     wabt 
-)
-
-install(TARGETS my_aot_compiler
-    RUNTIME DESTINATION bin
 )
 
 file(MAKE_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/output) 

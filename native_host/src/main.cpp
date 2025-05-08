@@ -4,129 +4,133 @@
 #include <vector>
 #include <string>
 #include <stdexcept>
-#include <array> // For std::array
+#include <optional>
+#include <variant>
+#include <string_view> // For std::string_view
 
-#include "wasmtime.hpp" // Wasmtime C++ API
-#include "host_shared_lib/functions.h" // Our shared library functions
+#include "wasmtime.hh"
+#include "host_shared_lib/functions.h"
 
-// Function to read a file into a byte vector
-std::vector<uint8_t> read_wasm_file(const std::string& path) {
+// Function to read a file into a byte vector (assuming it's correct and unchanged)
+std::vector<uint8_t> read_wasm_file(const std::string &path)
+{
     std::ifstream file(path, std::ios::binary | std::ios::ate);
-    if (!file.is_open()) {
+    if (!file.is_open())
+    {
         throw std::runtime_error("Failed to open Wasm file: " + path);
     }
     std::streamsize size = file.tellg();
     file.seekg(0, std::ios::beg);
-    std::vector<uint8_t> buffer(static_cast<size_t>(size)); // Ensure size_t for vector constructor
-    if (!file.read(reinterpret_cast<char*>(buffer.data()), size)) {
+    std::vector<uint8_t> buffer(static_cast<size_t>(size));
+    if (!file.read(reinterpret_cast<char *>(buffer.data()), size))
+    {
         throw std::runtime_error("Failed to read Wasm file: " + path);
     }
     return buffer;
 }
 
-int main(int argc, char* argv[]) {
-    if (argc < 2) {
-        std::cerr << "Usage: " << argv[0] << " <path_to_application.wasm>" << std::endl;
-        // For testing, let's try a default path if no arg is given
-        // This assumes application.wasm is in compiler/output relative to project root
-        // and my_native_runner is run from build/ or project root.
-        // This is still a bit fragile.
-        std::string default_wasm_path;
-        #ifdef _WIN32
-        default_wasm_path = "..\\compiler\\output\\application.wasm"; // If running from build/bin/
-        if (argc == 1) { // Check if my_native_runner itself is in build/bin
-             // A common case when running from IDE or directly from build dir
-             // If build dir is sibling to compiler dir:
-             // default_wasm_path = "../compiler/output/application.wasm";
-             // If build dir is my_aot_compiler_project/build:
-             default_wasm_path = "../compiler/output/application.wasm"; 
-        }
-        #else
-        default_wasm_path = "../compiler/output/application.wasm"; // If running from build/bin/
-        #endif
-        
-        // A more robust default might be if CMAKE_SOURCE_DIR is passed as a define
-        // For now, this is a guess.
-        std::cout << "No Wasm file path provided. Trying default: " << default_wasm_path << std::endl;
-        // We'll use default_wasm_path if argc < 2
+int main(int argc, char *argv[])
+{
+    std::string wasm_file_path;
+    if (argc < 2)
+    {
+        wasm_file_path = "compiler/output/application.wasm";
+        std::cout << "No Wasm file path provided. Trying default: " << wasm_file_path << std::endl;
     }
-    
-    std::string wasm_file_path = (argc < 2) ? "../compiler/output/application.wasm" : argv[1];
-     // A common default if building in 'build' dir and compiler output is 'compiler/output'
-    if (argc < 2) {
-        std::cout << "No wasm file provided, attempting to load from default path: " << wasm_file_path << std::endl;
+    else
+    {
+        wasm_file_path = argv[1];
     }
 
-
-    try {
+    try
+    {
         wasmtime::Engine engine;
         wasmtime::Store store(engine);
 
-        std::cout << "Loading Wasm module from: " << wasm_file_path << std::endl;
         auto wasm_bytes = read_wasm_file(wasm_file_path);
-        // Use Result for better error handling from wasmtime-cpp
-        auto module_result = wasmtime::Module::validate(engine, wasm_bytes);
-        if (!module_result) {
-             throw std::runtime_error("Failed to validate Wasm module: " + module_result.error().message());
-        }
-        wasmtime::Module module = module_result.value();
 
+        wasmtime::Result<wasmtime::Module> module_compile_result = wasmtime::Module::compile(engine, wasm_bytes);
+        if (!module_compile_result)
+        {
+            throw std::runtime_error("Failed to compile Wasm module: " + module_compile_result.err().message());
+        }
+        wasmtime::Module module = module_compile_result.unwrap();
 
         wasmtime::Linker linker(engine);
 
-        // Define the "env.log_i32" import using shared_log_i32
-        // The Wasm module imports "env"."log_i32"
-        // We provide our C++ function shared_log_i32 (from host_shared_lib) as its implementation.
-        // The signature in Wasm is (param i32) -> nil.
-        // shared_log_i32 is void(int32_t), which matches.
-        auto define_result = linker.define(
-            store,
-            "env",           // Wasm import module name
-            "log_i32",       // Wasm import function name
-            wasmtime::Func::wrap(store, shared_log_i32) // Wrap the C++ function
+        wasmtime::Func wrapped_log_i32_func = wasmtime::Func::wrap(store.context(), shared_log_i32);
+
+        // Linker::define takes Store::Context, string_view, string_view, const Extern&
+        // Create an Extern from the Func.
+        wasmtime::Extern extern_item = wrapped_log_i32_func;
+
+        wasmtime::Result<std::monostate> define_result = linker.define(
+            store.context(), // Store::Context cx
+            "env",           // std::string_view module
+            "log_i32",       // std::string_view name
+            extern_item      // const Extern &item
         );
-        if (!define_result) {
-            throw std::runtime_error("Failed to define import 'env.log_i32': " + define_result.error().message());
+        if (!define_result)
+        {
+            // The error type for define is wasmtime::Error
+            throw std::runtime_error("Failed to define import 'env.log_i32': " + define_result.err().message());
         }
 
-        std::cout << "Instantiating module..." << std::endl;
-        auto instance_result = linker.instantiate(store, module);
-        if (!instance_result) {
-            throw std::runtime_error("Failed to instantiate Wasm module: " + instance_result.error().message());
+        wasmtime::Result<wasmtime::Instance, wasmtime::TrapError> instance_result = linker.instantiate(store.context(), module);
+        if (!instance_result)
+        {
+            throw std::runtime_error("Failed to instantiate Wasm module: " + instance_result.err().message());
         }
-        wasmtime::Instance instance = instance_result.value();
+        wasmtime::Instance instance = instance_result.unwrap();
 
-        std::cout << "Calling exported 'main' function..." << std::endl;
-        auto main_func_obj = instance.get(store, "main");
-        if (!main_func_obj || !main_func_obj->func()) {
-            throw std::runtime_error("Failed to find exported 'main' function in Wasm module.");
-        }
-        wasmtime::Func main_func = main_func_obj->func().value();
-        
-        std::array<wasmtime::Val, 0> args; 
-        std::array<wasmtime::Val, 1> results; 
-
-        auto trap_result = main_func.call(store, args, results);
-        if (trap_result) { // A trap occurred
-            throw std::runtime_error("Wasm trapped: " + trap_result.message());
+        std::optional<wasmtime::Extern> main_func_extern = instance.get(store.context(), "main");
+        if (!main_func_extern)
+        {
+            throw std::runtime_error("Export 'main' not found in Wasm module.");
         }
 
-        if (results[0].kind() == wasmtime::ValKind::I32) {
-            std::cout << "Wasm 'main' function returned: " << results[0].i32() << std::endl;
-        } else {
-            std::cout << "Wasm 'main' function returned an unexpected type." << std::endl;
+        wasmtime::Func *func_ptr = std::get_if<wasmtime::Func>(&(*main_func_extern));
+        if (!func_ptr)
+        {
+            throw std::runtime_error("Export 'main' is not a function.");
+        }
+        wasmtime::Func main_func = *func_ptr;
+
+        std::vector<wasmtime::Val> main_args_vec;
+
+        // Func::call returns Result<std::vector<Val>, TrapError>
+        wasmtime::Result<std::vector<wasmtime::Val>, wasmtime::TrapError> call_trap_or_results = main_func.call(
+            store.context(),
+            main_args_vec);
+
+        if (!call_trap_or_results)
+        {
+            throw std::runtime_error("Wasm 'main' function trapped: " + call_trap_or_results.err().message());
         }
 
-    } catch (const wasmtime::Error& e) { 
-        std::cerr << "Wasmtime error: " << e.message();
-        // If it's a trap, wasmtime::Error might contain more info.
-        // For wasmtime-cpp v19+, you might need to inspect the error type
-        // or use specific methods if available to get trap details.
-        // The basic message() usually suffices.
-        std::cerr << std::endl;
+        std::vector<wasmtime::Val> results_vec = call_trap_or_results.unwrap();
+
+        if (results_vec.empty())
+        {
+            std::cout << "Wasm 'main' function returned no values." << std::endl;
+        }
+        else if (results_vec[0].kind() == wasmtime::ValKind::I32)
+        {
+            std::cout << "returned: " << results_vec[0].i32() << std::endl;
+        }
+        else
+        {
+            std::cout << "Wasm 'main' function returned an unexpected type for its first result." << std::endl;
+        }
+    }
+    catch (const wasmtime::Error &e)
+    {
+        std::cerr << "Wasmtime error: " << e.message() << std::endl;
         return 1;
     }
-    catch (const std::exception& e) {
+
+    catch (const std::exception &e)
+    {
         std::cerr << "Standard exception: " << e.what() << std::endl;
         return 1;
     }

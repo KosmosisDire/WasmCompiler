@@ -1,20 +1,25 @@
-cmake_minimum_required(VERSION 3.15)
+# my_aot_compiler_project/native_host/CMakeLists.txt
+cmake_minimum_required(VERSION 3.23)
 project(NativeHostInternal CXX)
 
-# Make Wasmtime SDK available (which includes the C++ API)
-FetchContent_MakeAvailable(wasmtime_sdk) # This replaces Populate and add_subdirectory
+set(BUILD_TESTS OFF CACHE BOOL "Build WABT tests" FORCE) 
+
+FetchContent_MakeAvailable(wasmtime) 
 
 add_executable(my_native_runner
     src/main.cpp
 )
 
+add_subdirectory(${wasmtime_SOURCE_DIR}/crates/c-api/ ${CMAKE_CURRENT_BINARY_DIR}/wasmtime)
+
 target_link_libraries(my_native_runner PRIVATE
-    wasmtime::cpp          # This target should be provided by the main Wasmtime build
+    wasmtime         
     host_shared_cpp_lib    
 )
 
-# Include directories from host_shared_lib should be handled by its PUBLIC target_include_directories
+target_include_directories(my_native_runner PRIVATE
+    wasmtime
+)
 
-install(TARGETS my_native_runner RUNTIME DESTINATION bin)
 
 message(STATUS "NativeHost CMake Done.")
